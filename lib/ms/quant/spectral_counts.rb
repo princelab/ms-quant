@@ -13,19 +13,21 @@ module Ms
       # returns a parallel array of Count objects.  If hit_to_object hash
       # given, then counts are split between groups sharing the hit. 
       # peptide_hits must respond to :charge and :aaseq
-      def self.counts(groups_of_pephits, hit_to_object=nil)
-        if split_counts
+      def self.counts(groups_of_pephits, hit_to_objects=nil)
+        if hit_to_objects
           peptide_hit_to_objects = Hash.new {|h,k| h[k] = [] }
           aaseq_to_objects = Hash.new {|h,k| h[k] = Set.new }
           aaseqcharge_to_objects = Hash.new {|h,k| h[k] = Set.new }
-          peptide_hits.each do |peptide_hit|
-            object = hit_to_object[peptide_hit]
-            peptide_hit_to_objects[peptide_hit] << object
-            aaseq_to_objects[peptide_hit.aaseq] << object
-            aaseqcharge_to_objects[peptide_hit.aaseq, peptide_hit.charge] << object
+          groups_of_pephits.each do |peptide_hits|
+            peptide_hits.each do |peptide_hit|
+              objects = hit_to_objects[peptide_hit]
+              peptide_hit_to_objects[peptide_hit].push(*objects)
+              aaseq_to_objects[peptide_hit.aaseq].push(*objects)
+              aaseqcharge_to_objects[peptide_hit.aaseq, peptide_hit.charge].push(*objects)
+            end
           end
         end
-        peptide_hit_groups.map do |peptide_hits|
+        groups_of_pephits.map do |peptide_hits|
           uniq_aaseq = Set.new 
           uniq_aaseq_charge = Set.new 
           peptide_hits.each do |peptide_hit|
@@ -34,7 +36,7 @@ module Ms
               uniq_aaseq << pephit.aaseq
             end
             counts_data = 
-              if split_counts
+              if hit_to_objects
                 [
                   peptide_hits.inject(0.0) {|sum,pephit| sum += (1.0 / peptide_hit_to_objects[pephit].size) },
                   uniq_aaseq.inject(0.0) {|sum,aaseq| sum += (1.0 / aaseq_to_objects[aaseq].size) },
