@@ -1,6 +1,7 @@
 #!/usr/bin/env ruby
 
 require 'ms/ident/peptide_hit/qvalue'
+require 'ms/ident/protein_hit'
 require 'ms/ident/peptide/db'
 require 'ms/quant/spectral_counts'
 
@@ -35,7 +36,7 @@ ar_of_peptide_hit_ars = Ms::Ident::Peptide::Db::IO.open(peptide_centric_db_file)
     peptide_hits = Ms::Ident::PeptideHit::Qvalue.from_file(file)
     peptide_hits.select! do |hit|
       # update each peptide with its protein hits
-      hit.proteins = peptide_to_proteins[hit]
+      hit.proteins = peptide_to_proteins[hit].map {|id| Ms::Ident::ProteinHit.new(id) }
     end
     peptide_hits.each {|h| hit_to_exp[hit] = exp }
     peptide_hits

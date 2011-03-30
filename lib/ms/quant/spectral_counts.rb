@@ -4,67 +4,30 @@ require 'ms/ident/protein_group'
 module Ms
   module Quant
     module SpectralCounts
-      Counts = Struct.new(:spectral, :aaseq, :aaseqcharge)
+      Counts = Struct.new(:spectral, :aaseqcharge, :aaseq)
 
-      SORT_PROTEINS = lambda do |group|
-        [group.spectral_counts, group.aaseqcharge_counts, group.aaseq_counts]
-      end
-
-      # returns a parallel array of Count objects.  If hit_to_object hash
-      # given, then counts are split between groups sharing the hit. 
-      # peptide_hits must respond to :charge and :aaseq
-      def self.counts(groups_of_pephits, hit_to_objects=nil)
-        if hit_to_objects
-          peptide_hit_to_objects = Hash.new {|h,k| h[k] = [] }
-          aaseq_to_objects = Hash.new {|h,k| h[k] = Set.new }
-          aaseqcharge_to_objects = Hash.new {|h,k| h[k] = Set.new }
-          groups_of_pephits.each do |peptide_hits|
-            peptide_hits.each do |peptide_hit|
-              objects = hit_to_objects[peptide_hit]
-              peptide_hit_to_objects[peptide_hit].push(*objects)
-              aaseq_to_objects[peptide_hit.aaseq].push(*objects)
-              aaseqcharge_to_objects[peptide_hit.aaseq, peptide_hit.charge].push(*objects)
-            end
+      # returns a parallel array of Count objects.  If split_hits then counts
+      # are split between groups sharing the hit.  peptide_hits must respond
+      # to :charge and :aaseq.  If split_hits, then each peptide_hit must
+      # respond to :linked_to yielding an object with a :size reflective of
+      # the number of shared peptide_hits.
+      def self.counts(groups_of_peptide_hits, &share_the_pephit)
+        groups_of_peptide_hits.map do |peptide_hits|
+          uniq_aaseq = {}
+          uniq_aaseq_charge = {}
+          linked_sizes = peptide_hits.map do |hit|
+            linked_to_size = share_the_pephit ? share_the_pephit.call(hit) : 1
+            # these guys will end up clobbering themselves, but the
+            # linked_to_size should be consistent if the key is the same
+            uniq_aaseq_charge[[hit.aaseq, hit.charge]] = linked_to_size
+            uniq_aaseq[hit.aaseq] = linked_to_size
+            linked_to_size
           end
-        end
-        groups_of_pephits.map do |peptide_hits|
-          uniq_aaseq = Set.new 
-          uniq_aaseq_charge = Set.new 
-          peptide_hits.each do |peptide_hit|
-            pephits.each do |pephit|
-              uniq_aaseq_charge << [pephit.aaseq, pephit.charge]
-              uniq_aaseq << pephit.aaseq
-            end
-            counts_data = 
-              if hit_to_objects
-                [
-                  peptide_hits.inject(0.0) {|sum,pephit| sum += (1.0 / peptide_hit_to_objects[pephit].size) },
-                  uniq_aaseq.inject(0.0) {|sum,aaseq| sum += (1.0 / aaseq_to_objects[aaseq].size) },
-                  uniq_aaseq_charge.inject(0.0) {|sum,aaseqcharge| sum += (1.0 / aaseqcharge_to_objects[aaseqcharge].size) }
-                ]
-              else
-                [ peptide_hits.size, uniq_aaseq.size, uniq_aaseq_charge.size]
-              end
+          counts_data = [linked_sizes, uniq_aaseq_charge.values, uniq_aaseq.values].map do |array|
+            share_the_pephit ?  array.inject(0.0) {|sum,size| sum+=(1.0/size) } : array.size
           end
           Counts.new(*counts_data)
         end
-      end
-
-      # takes an ordered hash of experiment names pointing to arrays of
-      # [Ms::Ident::ProteinGroup, Count].  Expects that the protein groups are
-      # shared objects between the different sets of experiments groups.
-      # returns a names array and a hash with protein_group keys and values
-      # which are an array of count objects per label.
-      def self.flatten_counts_for_experiments(experiment_to_protein_group_count_pairs, &sort_by)
-        group_to_counts = Hash.new {|h,k| h[k] = [] }
-        labels = []
-        experiment_to_protein_group_count_pairs.each do |name, pairs|
-          pairs.each do |protein_group, count_obj|
-            group_to_counts[protein_group] << count_obj
-          end
-          labels << name
-        end
-        [labels, groups_to_counts]
       end
 
     end
