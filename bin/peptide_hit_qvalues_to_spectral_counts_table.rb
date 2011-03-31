@@ -4,8 +4,25 @@ require 'ms/ident/peptide_hit/qvalue'
 require 'ms/ident/protein_hit'
 require 'ms/ident/peptide/db'
 require 'ms/quant/spectral_counts'
+require 'ms/quant/qspec'
+
+require 'yaml'
+require 'tempfile'
 
 require 'trollop'
+
+# inverse from Tilo Sloboda (now in facets)
+
+class Hash
+  def inverse
+    i = Hash.new
+    self.each_pair do |k,v|
+      if (Array === v) ; v.each{ |x| i[x] = ( i.has_key?(x) ? [k,i[x]].flatten : k ) }
+      else ; i[v] = ( i.has_key?(v) ? [k,i[v]].flatten : k ) end
+    end ; i  
+  end
+end
+
 
 def putsv(*args)
   if $VERBOSE
@@ -13,27 +30,81 @@ def putsv(*args)
   end
 end
 
+def basename(file)
+  base = file.chomp(File.extname(file))
+  base=base.chomp(File.extname(base)) if File.extname(base) == '.phq'
+  base
+end
+
+
+outfile = "spectral_counts.tsv"
+delimiter = "\t"
+
 opts = Trollop::Parser.new do
-  banner %Q{usage: #{File.basename(__FILE__)} peptide_centric_db.yml, file1.psq ...
+  banner %Q{usage: #{File.basename(__FILE__)} <fasta>.peptide_centric_db.yml group1=f1.psq,f2.psq group2=f3.psq,f4.psq
+or (each file a group):    #{File.basename(__FILE__)} <fasta>.peptide_centric_db.yml file1.psq file2.psq ...
+
+writes to #{outfile}
+group names can be arbitrarily defined
+psq is really .psq.tsv file
 }
-  opt :names, "array of names for the table (otherwise filenames)", :type => String
   opt :fdr_percent, "%FDR as cutoff", :default => 1.0
-  opt :write_subset, "(development) write subset db", :default => false
+  opt :qspec, "return qspec results (executes qspec or qspecgp). Requires :fasta.  Only 2 groups currently allowed", :default => false
+  opt :descriptions, "include descriptions of proteins, requires :fasta", :default => false
+  opt :fasta, "the fasta file.  Required for :qspec and :descriptions", :type => String
+  opt :outfile, "the to which file data are written", :default => outfile
+  opt :verbose, "speak up", :default => false
+  opt :count_type, "type of spectral counts (<spectral|aaseqcharge|aaseq>)", :default => 'spectral'
+  opt :qspec_normalize, "normalize spectral counts per run", :default => false
+  opt :write_subset, "(dev use only) write subset db", :default => false
 end
 
 opt = opts.parse(ARGV)
+opt[:count_type] = opt[:count_type].to_sym
+
+$VERBOSE = opt.delete(:verbose)
 
 if ARGV.size < 2
   opts.educate && exit
 end
 
-peptide_centric_db_file = ARGV.shift
-
-opt[:names] ||= ARGV.map do |file| 
-  base = file.chomp(File.extname(file))
-  base=base.chomp(File.extname(base)) if File.extname(base) == '.phq'
-  base
+if (opt[:qspec] || opt[:descriptions]) && !opt[:fasta]
+  puts "You must provide a fasta file with --fasta to use qspec or descriptions!!"
+  opts.educate && exit
 end
+
+peptide_centric_db_file = ARGV.shift
+raise ArgumentError, "need .yml file for peptide centric db" unless File.extname(peptide_centric_db_file) == '.yml'
+putsv "using: #{peptide_centric_db_file} as peptide centric db"
+
+# groupname => files
+condition_to_samplenames = {}
+samplename_to_filename = {}
+ARGV.each do |arg|
+  (condition, files) = 
+    if arg.include?('=')
+      (condition, filestring) = arg.split('=')
+      [condition, filestring.split(',')]
+    else
+      [basename(arg), [arg]]
+    end
+  reptag = ARGV.size
+  sample_to_file_pairs = files.each_with_index.map {|file,i| ["#{condition}-rep#{i+1}", file] }
+  sample_to_file_pairs.each {|name,file| samplename_to_filename[name] = file }
+  condition_to_samplenames[condition] = sample_to_file_pairs.map(&:first)
+end
+
+
+if $VERBOSE
+  puts "** condition: sample_names"
+  puts condition_to_samplenames.to_yaml
+  puts "** samplename: filename"
+  puts samplename_to_filename.to_yaml
+end
+
+raise ArgumentError, "must have 2 conditions for qspec!" if opt[:qspec] && condition_to_samplenames.size != 2
+
+samplenames = samplename_to_filename.keys
 
 class Ms::Ident::PeptideHit
   attr_accessor :experiment_name
@@ -42,11 +113,9 @@ fdr_cutoff = opt[:fdr_percent] / 100
 
 start=Time.now
 
-$VERBOSE = true
-
-ar_of_peptide_hit_ars = Ms::Ident::Peptide::Db::IO.open(peptide_centric_db_file) do |peptide_to_proteins|
+ar_of_pephit_ars = Ms::Ident::Peptide::Db::IO.open(peptide_centric_db_file) do |peptide_to_proteins|
   putsv "#{Time.now-start} seconds to read #{peptide_centric_db_file}"
-  ARGV.zip(opt[:names]).map do |file,exp| 
+  samplename_to_filename.map do |sample, file|
     peptide_hits = Ms::Ident::PeptideHit::Qvalue.from_file(file)
     putsv "#{file}: #{peptide_hits.size} hits"
     peptide_hits.select! do |hit|
@@ -54,7 +123,7 @@ ar_of_peptide_hit_ars = Ms::Ident::Peptide::Db::IO.open(peptide_centric_db_file)
         # update each peptide with its protein hits
         prot_ids = peptide_to_proteins[hit.aaseq]
         if prot_ids
-          hit.experiment_name = exp
+          hit.experiment_name = sample
           hit.proteins = prot_ids
         else ; false end
       else
@@ -65,31 +134,27 @@ ar_of_peptide_hit_ars = Ms::Ident::Peptide::Db::IO.open(peptide_centric_db_file)
   end
 end
 
-if opt[:write_subset] 
+if opt[:write_subset]
   aaseqs_to_prots = {} 
-  ar_of_peptide_hit_ars.each do |pephits|
-    pephits.each do |pephit|
-      aaseqs_to_prots[pephit.aaseq] = pephit.proteins
-    end
+  ar_of_pephit_ars.flatten(1).each do |pephit|
+    aaseqs_to_prots[pephit.aaseq] = pephit.proteins
   end
   outfile = "peptidecentric_subset.yml"
   puts "writing #{outfile} with #{aaseqs_to_prots.size} aaseq->protids"
   File.open(outfile,'w') do |out| 
     aaseqs_to_prots.each do |k,v| 
-      out.puts(%Q{#{k}: #{v.map(&:id).join("\t") }}) 
+      out.puts(%Q{#{k}: #{v.join("\t") }}) 
     end
   end
 end
 
-$VERBOSE = true
 if $VERBOSE
-  opt[:names].zip(ar_of_peptide_hit_ars) do |name, pep_ar|
-    puts "#{name}: #{pep_ar.size}"
+  samplenames.zip(ar_of_pephit_ars) do |samplename, pep_ar|
+    putsv "#{samplename}: #{pep_ar.size}"
   end
 end
 
-all_peptide_hits = ar_of_peptide_hit_ars.flatten(1)
-
+all_peptide_hits = ar_of_pephit_ars.flatten(1)
 
 # because peptide_hit#proteins yields id strings (which hash properly),
 # each protein group is an array of 
@@ -102,7 +167,7 @@ end
 
 # partition them all out by filename
 
-ar_of_count_data = opt[:names].map do |name|
+counts_parallel_to_names_with_counts_per_group = samplenames.map do |name|
   pep_hit_to_prot_groups = Hash.new {|h,k| h[k] = [] }
   groups_of_pephits = protein_groups.map do |prot_group|
     pep_hits = prot_group.peptide_hits.select {|hit| hit.experiment_name == name }
@@ -115,12 +180,69 @@ ar_of_count_data = opt[:names].map do |name|
   #end
 end
 
-# protein_groups
-# [ ar_of_counts_for_exp1, ar_of_counts_for_exp2, ar_of_counts_for_exp3 ]
-
-protein_groups.zip(*ar_of_count_data) do |row|
-  pg = row.shift
-  puts (row.map(&:to_a).flatten + pg.to_a).join("\t")
+if opt[:qspec] || opt[:descriptions]
+  putsv "reading lengths and descriptions from #{opt[:fasta]}"
+  (id_to_length, id_to_desc) = Ms::Fasta.protein_lengths_and_descriptions(opt[:fasta])
 end
 
+samplename_to_condition = condition_to_samplenames.inverse
+
+### OUTPUT TABLE
+header_cats = samplenames.map.to_a
+
+ar_of_rows = counts_parallel_to_names_with_counts_per_group.map do |counts_per_group|
+  counts_per_group.map(&opt[:count_type])
+end.transpose
+
+if opt[:qspec]
+  all_conditions = samplenames.map {|sn| samplename_to_condition[sn] }
+  condition_to_count_array = all_conditions.zip(counts_parallel_to_names_with_counts_per_group).map do |condition, counts_par_groups|
+    [condition, counts_par_groups.map(&opt[:count_type])]
+  end
+
+  name_length_pairs = protein_groups.map do |pg|
+    # prefer swissprot (sp) proteins over tremble (tr) and shorter protein
+    # lengths over longer lengths
+    best_guess_protein_id = pg.sort_by {|prot_id| [prot_id, -id_to_length[prot_id]] }.first
+    length = id_to_length[best_guess_protein_id]
+    [pg.join(":"), length]
+  end
+
+  putsv "qspec to normalize counts: #{opt[:qspec_normalize]}"
+  qspec_results = Ms::Quant::Qspec.new(name_length_pairs, condition_to_count_array).run(opt[:qspec_normalize])
+
+  to_add = [:fdr, :bayes_factor, :fold_change]
+  header_cats.push(*to_add)
+  qspec_results.zip(ar_of_rows) do |zipped|
+    (result, row) = zipped
+    row.push(*to_add.map {|v| result.send(v) })
+  end
+end
+
+header_cats.push( *%w(BestID AllIDs) )
+header_cats.push( 'Description' ) if opt[:descriptions]
+
+protein_groups.zip(ar_of_rows) do |zipped|
+  (pg, row) = zipped
+  # swiss-prot and then the shortest
+  best_protid = pg.sort_by {|prot_id| [prot_id, -id_to_length[prot_id]] }.first
+  (gene_id, desc) = 
+    if opt[:descriptions] 
+      desc = id_to_desc[best_protid] 
+      gene_id = (md=desc.match(/ GN=(\w+) ?/)) ? md[1] : best_protid
+      [gene_id, desc]
+    else
+      [best_protid, nil]
+    end
+  row << gene_id << pg.join(',')
+  row.push(desc) if desc
+end
+
+### SORT???
+
+File.open(opt[:outfile],'w') do |out|
+  out.puts header_cats.join(delimiter) 
+  ar_of_rows.each {|row| out.puts row.join(delimiter) }
+  putsv "wrote: #{opt[:outfile]}"
+end
 
