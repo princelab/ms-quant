@@ -28,11 +28,11 @@ class Ms::Quant::Qspec
   def self.results_array(resultsfile)
     rows = IO.readlines(resultsfile).map {|line| line.chomp.split("\t") }
     headers = rows.shift
+    start_bayes = headers.index {|v| v =~ /BayesFactor/i }
     rows.map do |row| 
       data = [row[0]]
-      data.push( *row[1,2].map(&:to_i) )
-      data.push( *row[3,4].map(&:to_f) )
-      data.push( row[7] )
+      data.push( *row[start_bayes,4].map(&:to_f) )
+      data.push( row[start_bayes+4] )
       Results.new(*data)
     end
   end
@@ -74,18 +74,19 @@ class Ms::Quant::Qspec
     write(tfile.path)
     qspec_exe = self.class.executable(conditions)
     cmd = [qspec_exe, tfile.path, NBURNIN, NITER, (normalize ? 1 : 0)].join(' ')
-    puts "running #{cmd}" if $VERBOSE
+    if $VERBOSE
+      puts "running #{cmd}" if $VERBOSE
+    else
+      cmd << " 2>&1"
+    end
     reply = `#{cmd}`
     puts reply if $VERBOSE
-    results = self.class.results_array(tfile.path + Results::EXT)
+    results = self.class.results_array(tfile.path + '_' + qspec_exe)
     tfile.unlink
     results
   end
 
   # for version 2 of QSpec
-  Results = Struct.new(:protid, :set0, :set1, :bayes_factor, :fold_change, :rb_stat, :fdr, :flag)
-  class Results
-    EXT = '_qspec'
-  end
+  Results = Struct.new(:protid, :bayes_factor, :fold_change, :rb_stat, :fdr, :flag)
 end
 

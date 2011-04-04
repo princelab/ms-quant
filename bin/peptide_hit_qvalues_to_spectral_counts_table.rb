@@ -165,8 +165,6 @@ protein_groups.each do |protein_group|
   protein_group.peptide_hits.each {|hit| pephit_to_protein_groups[hit] << protein_group }
 end
 
-# partition them all out by filename
-
 counts_parallel_to_names_with_counts_per_group = samplenames.map do |name|
   pep_hit_to_prot_groups = Hash.new {|h,k| h[k] = [] }
   groups_of_pephits = protein_groups.map do |prot_group|
@@ -175,9 +173,9 @@ counts_parallel_to_names_with_counts_per_group = samplenames.map do |name|
       pep_hit_to_prot_groups[pep_hit] << prot_group
     end # returns the group of pep_hits
   end
-  counts = Ms::Quant::SpectralCounts.counts(groups_of_pephits) # do |pephit|
-  #  pephit_to_protein_groups[pephit].size
-  #end
+  counts = Ms::Quant::SpectralCounts.counts(groups_of_pephits) do |pephit|
+    pephit_to_protein_groups[pephit].size
+  end
 end
 
 if opt[:qspec] || opt[:descriptions]
@@ -222,10 +220,17 @@ end
 header_cats.push( *%w(BestID AllIDs) )
 header_cats.push( 'Description' ) if opt[:descriptions]
 
+sort_protein_id = 
+  if id_to_length
+    lambda {|prot_id| [prot_id, -id_to_length[prot_id]] }
+  else
+    lambda {|prot_id| prot_id }
+  end
+
 protein_groups.zip(ar_of_rows) do |zipped|
   (pg, row) = zipped
   # swiss-prot and then the shortest
-  best_protid = pg.sort_by {|prot_id| [prot_id, -id_to_length[prot_id]] }.first
+  best_protid = pg.sort_by(&sort_protein_id).first
   (gene_id, desc) = 
     if opt[:descriptions] 
       desc = id_to_desc[best_protid] 
@@ -237,8 +242,6 @@ protein_groups.zip(ar_of_rows) do |zipped|
   row << gene_id << pg.join(',')
   row.push(desc) if desc
 end
-
-### SORT???
 
 File.open(opt[:outfile],'w') do |out|
   out.puts header_cats.join(delimiter) 
