@@ -2,8 +2,6 @@ require 'spec_helper'
 
 require 'ms/quant/spectral_counts'
 
-
-
 PeptideHit = Struct.new(:aaseq, :charge, :proteins) do
   def initialize(*args)
     super(*args)
@@ -58,7 +56,7 @@ describe 'groups of peptide hits' do
 
   it 'finds spectral counts (splitting counts between shared)' do
     groups_of_pephits = @prot_hits.map(&:peptide_hits)
-    counts = Ms::Quant::SpectralCounts.counts(groups_of_pephits) {|pephit| pephit.proteins.size }
+    counts = Ms::Quant::SpectralCounts.counts(groups_of_pephits) {|pephit| 1.0 / pephit.proteins.size }
     @expected_counts_split.zip(counts) do |exp, act|
       exp.zip(act) {|e,a| a.should.be.close e, 0.0001 }
     end

@@ -174,7 +174,7 @@ counts_parallel_to_names_with_counts_per_group = samplenames.map do |name|
     end # returns the group of pep_hits
   end
   counts = Ms::Quant::SpectralCounts.counts(groups_of_pephits) do |pephit|
-    pephit_to_protein_groups[pephit].size
+    1.0 / pephit_to_protein_groups[pephit].size
   end
 end
 
