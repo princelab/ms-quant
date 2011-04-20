@@ -31,6 +31,7 @@ class Ms::Quant::Qspec
     start_bayes = headers.index {|v| v =~ /BayesFactor/i }
     rows.map do |row| 
       data = [row[0]]
+      data.push( row[1...start_bayes].map(&:to_f) )
       data.push( *row[start_bayes,4].map(&:to_f) )
       data.push( row[start_bayes+4] )
       Results.new(*data)
@@ -87,6 +88,7 @@ class Ms::Quant::Qspec
   end
 
   # for version 2 of QSpec
-  Results = Struct.new(:protid, :bayes_factor, :fold_change, :rb_stat, :fdr, :flag)
+  # counts array is parallel to the experiment names passed in originally
+  Results = Struct.new(:protid, :counts_array, :bayes_factor, :fold_change, :rb_stat, :fdr, :flag)
 end
 
