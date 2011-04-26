@@ -1,28 +1,23 @@
 #!/usr/bin/env ruby
 
+require 'andand'
+require 'set'
+require 'ruport'
+
 require 'ms/ident/peptide_hit/qvalue'
-require 'ms/ident/protein_hit'
+require 'ms/ident/protein'
 require 'ms/ident/peptide/db'
 require 'ms/quant/spectral_counts'
+require 'ms/quant/protein_group_comparison'
+require 'ms/quant/qspec/protein_group_comparison'
 require 'ms/quant/qspec'
+require 'ms/quant/cmdline'
+
 
 require 'yaml'
 require 'tempfile'
 
 require 'trollop'
-
-# inverse from Tilo Sloboda (now in facets)
-
-class Hash
-  def inverse
-    i = Hash.new
-    self.each_pair do |k,v|
-      if (Array === v) ; v.each{ |x| i[x] = ( i.has_key?(x) ? [k,i[x]].flatten : k ) }
-      else ; i[v] = ( i.has_key?(v) ? [k,i[v]].flatten : k ) end
-    end ; i  
-  end
-end
-
 
 def putsv(*args)
   if $VERBOSE
@@ -36,8 +31,48 @@ def basename(file)
   base
 end
 
+class Ruport::Data::Table
+  # returns self
+  def add_column_with_data(colname, array_of_data, opts={})
+    self.add_column(colname, opts)
+    self.data.zip(array_of_data) do |row, newval|
+      row[colname] = newval
+    end
+    self
+  end
+
+  # acceptable opts:
+  #
+  #     :header => an array of lines (each which will be commented out)
+  def to_tsv(file, opt={})
+    delimiter = "\t" 
+    File.open(file,'w') do |out|
+      opt[:header].each {|line| out.puts "# #{line}" } if opt[:header]
+      out.puts self.column_names.join(delimiter)
+      self.data.each do |row|
+        out.puts row.to_a.join(delimiter)
+      end
+      opt[:footer].each {|line| out.puts "# #{line}" } if opt[:footer]
+    end
+  end
+
+end
+
+def write_subset(sample_to_pephits, outfile="peptidecentric_subset.yml")
+  aaseqs_to_prots = {} 
+  sample_to_pephits.map(&:last).flatten(1).each do |pephit|
+    aaseqs_to_prots[pephit.aaseq] = pephit.proteins.map(&:id)
+  end
+  File.open(outfile,'w') do |out| 
+    aaseqs_to_prots.each do |k,v| 
+      out.puts(%Q{#{k}: #{v.join("\t") }}) 
+    end
+  end
+end
+
 
 outfile = "spectral_counts.tsv"
+pephits_outfile = "spectral_counts.pephits.tsv"
 delimiter = "\t"
 
 opts = Trollop::Parser.new do
@@ -53,6 +88,7 @@ psq is really .psq.tsv file
   opt :descriptions, "include descriptions of proteins, requires :fasta", :default => false
   opt :fasta, "the fasta file.  Required for :qspec and :descriptions", :type => String
   opt :outfile, "the to which file data are written", :default => outfile
+  opt :peptides, "also write peptide hits (to: #{pephits_outfile})", :default => false
   opt :verbose, "speak up", :default => false
   opt :count_type, "type of spectral counts (<spectral|aaseqcharge|aaseq>)", :default => 'spectral'
   opt :qspec_normalize, "normalize spectral counts per run", :default => false
@@ -78,29 +114,8 @@ raise ArgumentError, "need .yml file for peptide centric db" unless File.extname
 putsv "using: #{peptide_centric_db_file} as peptide centric db"
 
 # groupname => files
-condition_to_samplenames = {}
-samplename_to_filename = {}
-ARGV.each do |arg|
-  (condition, files) = 
-    if arg.include?('=')
-      (condition, filestring) = arg.split('=')
-      [condition, filestring.split(',')]
-    else
-      [basename(arg), [arg]]
-    end
-  reptag = ARGV.size
-  sample_to_file_pairs = files.each_with_index.map {|file,i| ["#{condition}-rep#{i+1}", file] }
-  sample_to_file_pairs.each {|name,file| samplename_to_filename[name] = file }
-  condition_to_samplenames[condition] = sample_to_file_pairs.map(&:first)
-end
 
-
-if $VERBOSE
-  puts "** condition: sample_names"
-  puts condition_to_samplenames.to_yaml
-  puts "** samplename: filename"
-  puts samplename_to_filename.to_yaml
-end
+(samplename_to_filename, condition_to_samplenames, samplename_to_condition) = Ms::Quant::Cmdline.args_to_hashes(ARGV)
 
 raise ArgumentError, "must have 2 conditions for qspec!" if opt[:qspec] && condition_to_samplenames.size != 2
 
@@ -108,144 +123,122 @@ samplenames = samplename_to_filename.keys
 
 class Ms::Ident::PeptideHit
   attr_accessor :experiment_name
+  attr_accessor :protein_groups
 end
+class Ms::Ident::Protein
+  attr_accessor :length
+end
+
+
 fdr_cutoff = opt[:fdr_percent] / 100
-
-start=Time.now
-
-ar_of_pephit_ars = Ms::Ident::Peptide::Db::IO.open(peptide_centric_db_file) do |peptide_to_proteins|
-  putsv "#{Time.now-start} seconds to read #{peptide_centric_db_file}"
-  samplename_to_filename.map do |sample, file|
-    peptide_hits = Ms::Ident::PeptideHit::Qvalue.from_file(file)
-    putsv "#{file}: #{peptide_hits.size} hits"
-    peptide_hits.select! do |hit|
-      if hit.qvalue <= fdr_cutoff
-        # update each peptide with its protein hits
-        prot_ids = peptide_to_proteins[hit.aaseq]
-        if prot_ids
-          hit.experiment_name = sample
-          hit.proteins = prot_ids
-        else ; false end
-      else
-        false
-      end
-    end
-    peptide_hits
-  end
-end
-
-if opt[:write_subset]
-  aaseqs_to_prots = {} 
-  ar_of_pephit_ars.flatten(1).each do |pephit|
-    aaseqs_to_prots[pephit.aaseq] = pephit.proteins
-  end
-  outfile = "peptidecentric_subset.yml"
-  puts "writing #{outfile} with #{aaseqs_to_prots.size} aaseq->protids"
-  File.open(outfile,'w') do |out| 
-    aaseqs_to_prots.each do |k,v| 
-      out.puts(%Q{#{k}: #{v.join("\t") }}) 
-    end
-  end
-end
-
-if $VERBOSE
-  samplenames.zip(ar_of_pephit_ars) do |samplename, pep_ar|
-    putsv "#{samplename}: #{pep_ar.size}"
-  end
-end
-
-all_peptide_hits = ar_of_pephit_ars.flatten(1)
-
-# because peptide_hit#proteins yields id strings (which hash properly),
-# each protein group is an array of 
-protein_groups = Ms::Ident::ProteinGroup.peptide_hits_to_protein_groups(all_peptide_hits)
-
-pephit_to_protein_groups = Hash.new {|h,k| h[k] = [] }
-protein_groups.each do |protein_group|
-  protein_group.peptide_hits.each {|hit| pephit_to_protein_groups[hit] << protein_group }
-end
-
-counts_parallel_to_names_with_counts_per_group = samplenames.map do |name|
-  pep_hit_to_prot_groups = Hash.new {|h,k| h[k] = [] }
-  groups_of_pephits = protein_groups.map do |prot_group|
-    pep_hits = prot_group.peptide_hits.select {|hit| hit.experiment_name == name }
-    pep_hits.each do |pep_hit|
-      pep_hit_to_prot_groups[pep_hit] << prot_group
-    end # returns the group of pep_hits
-  end
-  counts = Ms::Quant::SpectralCounts.counts(groups_of_pephits) do |pephit|
-    1.0 / pephit_to_protein_groups[pephit].size
-  end
-end
 
 if opt[:qspec] || opt[:descriptions]
   putsv "reading lengths and descriptions from #{opt[:fasta]}"
   (id_to_length, id_to_desc) = Ms::Fasta.protein_lengths_and_descriptions(opt[:fasta])
 end
 
-samplename_to_condition = condition_to_samplenames.inverse
-
-### OUTPUT TABLE
-header_cats = samplenames.map.to_a
-
-ar_of_rows = counts_parallel_to_names_with_counts_per_group.map do |counts_per_group|
-  counts_per_group.map(&opt[:count_type])
-end.transpose
-
-if opt[:qspec]
-  all_conditions = samplenames.map {|sn| samplename_to_condition[sn] }
-  condition_to_count_array = all_conditions.zip(counts_parallel_to_names_with_counts_per_group).map do |condition, counts_par_groups|
-    [condition, counts_par_groups.map(&opt[:count_type])]
-  end
-
-  name_length_pairs = protein_groups.map do |pg|
-    # prefer swissprot (sp) proteins over tremble (tr) and shorter protein
-    # lengths over longer lengths
-    best_guess_protein_id = pg.sort_by {|prot_id| [prot_id, -id_to_length[prot_id]] }.first
-    length = id_to_length[best_guess_protein_id]
-    [pg.join(":"), length]
-  end
-
-  putsv "qspec to normalize counts: #{opt[:qspec_normalize]}"
-  qspec_results = Ms::Quant::Qspec.new(name_length_pairs, condition_to_count_array).run(opt[:qspec_normalize])
-
-  to_add = [:fdr, :bayes_factor, :fold_change]
-  header_cats.push(*to_add)
-  qspec_results.zip(ar_of_rows) do |zipped|
-    (result, row) = zipped
-    row.push(*to_add.map {|v| result.send(v) })
-  end
+samplename_to_peptidehits = samplename_to_filename.map do |sample, file|
+ [sample, Ms::Ident::PeptideHit::Qvalue.from_file(file).select {|hit| hit.qvalue <= fdr_cutoff }]
 end
 
-header_cats.push( *%w(BestID AllIDs) )
-header_cats.push( 'Description' ) if opt[:descriptions]
-
-sort_protein_id = 
-  if id_to_length
-    lambda {|prot_id| [prot_id, -id_to_length[prot_id]] }
-  else
-    lambda {|prot_id| prot_id }
-  end
-
-protein_groups.zip(ar_of_rows) do |zipped|
-  (pg, row) = zipped
-  # swiss-prot and then the shortest
-  best_protid = pg.sort_by(&sort_protein_id).first
-  (gene_id, desc) = 
-    if opt[:descriptions] 
-      desc = id_to_desc[best_protid] 
-      gene_id = (md=desc.match(/ GN=(\w+) ?/)) ? md[1] : best_protid
-      [gene_id, desc]
-    else
-      [best_protid, nil]
+# update each peptide hit with protein hits and sample name:
+all_protein_hits = Hash.new {|h,id| h[id] = Ms::Ident::Protein.new(id) }
+Ms::Ident::Peptide::Db::IO.open(peptide_centric_db_file) do |peptide_to_proteins|
+  samplename_to_peptidehits.map do |sample, peptide_hits|
+    peptide_hits.each do |hit|
+      # update each peptide with its protein hits
+      protein_hits = peptide_to_proteins[hit.aaseq].map do |id| 
+        protein = all_protein_hits[id]
+        protein.length = id_to_length[id] if id_to_length
+        protein.description = id_to_desc[id] if id_to_desc
+        protein
+      end
+      hit.experiment_name = sample
+      # if there are protein hits, the peptide hit is selected 
+      hit.proteins = protein_hits
     end
-  row << gene_id << pg.join(',')
-  row.push(desc) if desc
+  end
 end
 
-File.open(opt[:outfile],'w') do |out|
-  out.puts header_cats.join(delimiter) 
-  ar_of_rows.each {|row| out.puts row.join(delimiter) }
-  putsv "wrote: #{opt[:outfile]}"
+write_subset(samplename_to_peptidehits) if opt[:write_subset]
+
+samplename_to_peptidehits.each {|samplename, hits| putsv "#{samplename}: #{hits.size}" } if $VERBOSE
+
+all_peptide_hits = samplename_to_peptidehits.map(&:last).flatten(1)
+
+# this constricts everything down to a minimal set of protein groups that
+# explain the entire set of peptide hits.   
+update_pephits = true  # ensures that each pephit is linked to the array of protein groups it is associated with
+protein_groups = Ms::Ident::ProteinGroup.peptide_hits_to_protein_groups(all_peptide_hits, update_pephits)
+
+hits_table_hash = {}  # create the table using key => column hash
+samplenames.each do |name|
+  hits_table_hash[name] = protein_groups.map do |prot_group|
+    prot_group.peptide_hits.select {|hit| hit.experiment_name == name }
+  end
 end
 
+# The columns are filled with groups of peptide hits, one group of hits per
+# protein group (protein group order is implicit).  The rows are sample names.
+#
+#  (implied) sample1   sample2   sample3   ...
+#  (group1)  [hit,hit] [hit...]  [hit...]  ...
+#  (group2)  [hit,hit] [hit...]  [hit...]  ...
+#   ...         ...       ...       ...       ...
+hits_table = Ruport::Data::Table.new(:data => hits_table_hash.values.transpose, :column_names => hits_table_hash.keys)
+
+# spectral counts of type opt[:count_type]
+counts_data = hits_table.data.map do |row|
+  row.map do |pephits|
+    Ms::Quant::SpectralCounts.counts(pephits) {|pephit| 1.0 / pephit.protein_groups.size }.send(opt[:count_type])
+  end
+end
+
+# each cell holds a SpectralCounts object, which hash 3 types of count data
+counts_table = Ruport::Data::Table.new(:data => counts_data, :column_names => samplenames)
+
+# return a list of ProteinGroupComparisons
+if opt[:qspec]
+
+  # prepare data for qspec
+  condition_to_count_array = counts_table.column_names.map {|name| [name, counts_table.column(name)] }
+  # average length of the proteins in the group
+  name_length_pairs = protein_groups.map do |pg|
+    [pg.join(":"), pg.map(&:length).reduce(:+)./(pg.size).round]
+  end
+
+  qspec_results = Ms::Quant::Qspec.new(name_length_pairs, condition_to_count_array).run(opt[:qspec_normalize])
+  
+  cols_to_add = [:bayes_factor, :fold_change, :fdr]
+  counts_table.add_columns cols_to_add
+  counts_table.data.zip(qspec_results) do |row, qspec_result|
+    cols_to_add.each {|cat| row[cat] = qspec_result[cat] }
+  end
+end
+
+counts_table.add_columns( [:name, :ids, :description] )
+counts_table.data.zip(protein_groups) do |row, pg|
+  best_id = pg.sort_by {|prot| [prot.id, prot.length] }.first
+  row.name = best_id.description.andand.match(/ GN=([^\s]+) ?/).andand[1] || best_id.id
+  row.ids = pg.map(&:id).join(',')
+  row.description = best_id.description
+end
+
+
+if opt[:peptides]
+  hits_table.each do |record|
+    record.each_with_index do |hits,i|
+      new_cell = hits.group_by do |hit| 
+        [hit.aaseq, hit.charge]
+      end.map do |key, hits|
+        [key.reverse.join("_"), hits.map(&:id).join(',')].join(":")
+      end.join('; ')
+      record[i] = new_cell
+    end
+  end
+  hits_table.add_column_with_data(:name, counts_table.column(:name), :position=>0)
+  hits_table.to_tsv(pephits_outfile, :footer => ["parallel to #{outfile}"])
+end
+
+intro = ["samples: #{samplename_to_filename}", "options: #{opt}"]
+counts_table.to_tsv(outfile, :footer => intro)

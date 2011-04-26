@@ -16,7 +16,7 @@ module Ms::Quant::ProteinGroupComparison
   attr_accessor :values
 
   def initialize(protein_group, experiments, values)
-    (@protein_group, @experiment, @values) = protein_group, experiment, values
+    (@protein_group, @experiment, @values) = protein_group, experiments, values
   end
 end
 

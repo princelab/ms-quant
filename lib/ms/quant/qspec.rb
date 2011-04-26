@@ -69,6 +69,8 @@ class Ms::Quant::Qspec
     end
   end
 
+  # returns an array of Qspec::Results objects (each object can be considered
+  # a row of data)
   def run(normalize=true, opts={})
     puts "normalize: #{normalize}" if $VERBOSE
     tfile = Tempfile.new("qspec")
