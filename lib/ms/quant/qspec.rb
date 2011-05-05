@@ -3,8 +3,11 @@ module Ms::Quant ; end
 
 class Ms::Quant::Qspec
 
-  NBURNIN = 50  # need to check
-  NITER = 2000 # check
+  # personal communication with Hyungwon Choi: "We typically use nburn=2000,
+  # niter=10000, which is quite sufficient to guarantee the reproducibility of
+  # results using the same data."
+  NBURNIN = 2000
+  NITER = 10000
   INIT_HEADER = %w(protid protLen)
   DELIMITER = "\t"
 
