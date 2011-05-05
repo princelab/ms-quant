@@ -8,6 +8,8 @@ class Ms::Quant::Qspec
   INIT_HEADER = %w(protid protLen)
   DELIMITER = "\t"
 
+  SUBMITTED_TO_QSPEC = 'submitted_to_qspec.txt'
+
   # takes an ordered list of conditions ['cond1', 'cond1', 'cond2', 'cond2'] and
   # returns an array of ints [0,0,0,1,1,1...]
   def self.conditions_to_ints(conditions)
@@ -75,6 +77,11 @@ class Ms::Quant::Qspec
     puts "normalize: #{normalize}" if $VERBOSE
     tfile = Tempfile.new("qspec")
     write(tfile.path)
+    if opts[:keep]
+      local_file = File.join(Dir.pwd,File.basename(tfile.path))
+      FileUtils.cp(tfile.path, local_file, :verbose => $VERBOSE)
+      puts "(copy of) file submitted to qspec: #{local_file}" if $VERBOSE
+    end
     qspec_exe = self.class.executable(conditions)
     cmd = [qspec_exe, tfile.path, NBURNIN, NITER, (normalize ? 1 : 0)].join(' ')
     if $VERBOSE
@@ -84,7 +91,13 @@ class Ms::Quant::Qspec
     end
     reply = `#{cmd}`
     puts reply if $VERBOSE
-    results = self.class.results_array(tfile.path + '_' + qspec_exe)
+    outfile = tfile.path + '_' + qspec_exe
+    results = self.class.results_array(outfile)
+    if opts[:keep]
+      local_outfile = File.join(Dir.pwd, File.basename(outfile))
+      FileUtils.cp(outfile, local_outfile, :verbose => $VERBOSE)
+      puts "(copy of) file returned from qspec: #{outfile}"
+    end
     tfile.unlink
     results
   end

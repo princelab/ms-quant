@@ -92,6 +92,7 @@ psq is really .psq.tsv file
   opt :verbose, "speak up", :default => false
   opt :count_type, "type of spectral counts (<spectral|aaseqcharge|aaseq>)", :default => 'spectral'
   opt :qspec_normalize, "normalize spectral counts per run", :default => false
+  opt :qspec_keep_files, "keep a copy of the files submitted and returned from Qspec", :default => false
   opt :write_subset, "(dev use only) write subset db", :default => false
 end
 
@@ -201,13 +202,15 @@ counts_table = Ruport::Data::Table.new(:data => counts_data, :column_names => sa
 if opt[:qspec]
 
   # prepare data for qspec
-  condition_to_count_array = counts_table.column_names.map {|name| [name, counts_table.column(name)] }
+  condition_to_count_array = counts_table.column_names.map do |name| 
+    [samplename_to_condition[name], counts_table.column(name)] 
+  end
   # average length of the proteins in the group
   name_length_pairs = protein_groups.map do |pg|
-    [pg.join(":"), pg.map(&:length).reduce(:+)./(pg.size).round]
+    [pg.map(&:id).join(":"), pg.map(&:length).reduce(:+)./(pg.size).round]
   end
 
-  qspec_results = Ms::Quant::Qspec.new(name_length_pairs, condition_to_count_array).run(opt[:qspec_normalize])
+  qspec_results = Ms::Quant::Qspec.new(name_length_pairs, condition_to_count_array).run(opt[:qspec_normalize], :keep => opt[:qspec_keep_files])
   
   cols_to_add = [:bayes_factor, :fold_change, :fdr]
   counts_table.add_columns cols_to_add

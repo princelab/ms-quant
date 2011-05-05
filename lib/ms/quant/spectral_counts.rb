@@ -5,6 +5,13 @@ module Ms
   module Quant
     module SpectralCounts
       Counts = Struct.new(:spectral, :aaseqcharge, :aaseq)
+      class Counts
+        def initialize(*args)
+          super(*args)
+          # default is zero counts
+          self[0] ||= 0.0 ; self[1] ||= 0.0 ; self[2] ||= 0.0
+        end
+      end
 
       # returns a parallel array of Count objects.  If split_hits then counts
       # are split between groups sharing the hit.  peptide_hits must respond
